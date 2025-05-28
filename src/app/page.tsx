@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { createFileTree } from '@/utils/file';
 import { FileTreeNode } from '@/utils/types';
 import TreeNode from '@/components/TreeNode';
@@ -10,7 +10,7 @@ export default function TreeifyPage() {
   const [fileTree, setFileTree] = useState<FileTreeNode[] | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
-  const [treeStyle, setTreeStyle] = useState({
+  const [treeStyle] = useState({
     showLines: true,
     indentSize: 16,
     lineColor: 'rgb(229 231 235)',
@@ -20,7 +20,7 @@ export default function TreeifyPage() {
 function readEntry(
   entry: any,
   webkitRelativePath: string = '',
-  fileList: FileEntry[] = []
+  fileList: any[] = []
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     if (entry.isFile) {
@@ -49,34 +49,6 @@ function readEntry(
     }
   });
 }
-  // 从会话存储中恢复文件树状态
-  useEffect(() => {
-    const restoredFileTree = sessionStorage.getItem('restoredFileTree');
-    const restoredTreeStyle = sessionStorage.getItem('restoredTreeStyle');
-    const restoredOperationId = sessionStorage.getItem('restoredOperationId');
-    
-    if (restoredFileTree) {
-      try {
-        setFileTree(JSON.parse(restoredFileTree));
-        // 恢复后清除会话存储中的数据
-        sessionStorage.removeItem('restoredFileTree');
-      } catch (error) {
-        console.error('解析恢复的文件树失败:', error);
-      }
-    }
-    
-    if (restoredTreeStyle) {
-      try {
-        setTreeStyle(JSON.parse(restoredTreeStyle));
-        sessionStorage.removeItem('restoredTreeStyle');
-      } catch (error) {
-        console.error('解析恢复的树样式失败:', error);
-      }
-    }
-    
-    // 保留操作ID，用于后续保存操作历史时匹配
-    // 注意：不在这里清除restoredOperationId，而是在saveOperationToHistory中使用后清除
-  }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -96,8 +68,7 @@ function readEntry(
     setIsDragging(false);
 
     const items = e.dataTransfer.items;
-    const files = [];
-  debugger
+    const files: any[] | FileList | undefined = [];
     for (let i = 0; i < items.length; i++) {
       const entry = items[i].webkitGetAsEntry?.();
       if (entry) {
@@ -105,115 +76,32 @@ function readEntry(
       }
     }
     console.log('文件列表:', files);
-    const tree = createFileTree(files);
+    const tree = createFileTree(files as any);
     console.log('生成的文件树:', tree);                 
     // 更新文件树状态
     setFileTree(tree);
-  }, []);
-
-  const handleFileSelect = useCallback(() => {
-    console.log('文件选择器被点击');
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.webkitdirectory = true;
-    
-    // 添加错误处理
-    try {
-      input.addEventListener('change', (e: Event) => {
-        const files = (e.target as HTMLInputElement).files;
-        console.log('选择的文件数量:', files?.length || 0);
-        
-        if (files && files.length > 0) {
-          // 检查是否有webkitRelativePath属性
-          const hasRelativePath = Array.from(files).some(file => file.webkitRelativePath && file.webkitRelativePath.length > 0);
-          console.log('文件是否有相对路径:', hasRelativePath);
-          
-          const tree = createFileTree(files);
-          console.log('生成的文件树:', tree);
-          setFileTree(tree);
-          
-          // 保存操作到历史记录
-          saveOperationToHistory(tree);
-        } else {
-          console.log('没有选择文件');
-        }
-      });
-      
-      // 检查浏览器是否支持webkitdirectory
-      if ('webkitdirectory' in input) {
-        console.log('浏览器支持webkitdirectory');
-      } else {
-        console.log('浏览器不支持webkitdirectory');
-        alert('您的浏览器不支持文件夹选择，请使用Chrome、Edge或Firefox最新版本');
-      }
-      
-      input.click();
-    } catch (error) {
-      console.error('文件选择器错误:', error);
-      alert('文件选择器出错，请使用Chrome、Edge或Firefox最新版本');
-    }
-  }, []);
+  }, [treeStyle]);
 
   const handleCopyText = useCallback(() => {
     if (textAreaRef.current && fileTree) {
       textAreaRef.current.select();
-      document.execCommand('copy');
+      // 使用现代的 Clipboard API 替代已弃用的 execCommand
+      navigator.clipboard.writeText(textAreaRef.current.value);
       setCopySuccess(true);
       setTimeout(() => setCopySuccess(false), 2000);
     }
   }, [fileTree]);
 
   // 处理节点可见性变更
-  const handleNodeVisibilityChange = useCallback((node: FileTreeNode, visible: boolean) => {
+  const handleNodeVisibilityChange = useCallback(() => {
     // 强制更新目录文本
     setFileTree(prevTree => {
       if (!prevTree) return null;
-      const newTree = [...prevTree];
-      
-      // 保存操作到历史记录（节点可见性变更）
-      saveOperationToHistory(newTree);
-      
+      const newTree = [...prevTree];  
       return newTree;
     });
   }, []);
   
-  // 保存操作到历史记录
-  const saveOperationToHistory = (tree: FileTreeNode[]) => {
-    // 从本地存储获取现有的操作历史
-    const storedOperations = localStorage.getItem('operationHistory');
-    let operations = [];
-    
-    if (storedOperations) {
-      try {
-        operations = JSON.parse(storedOperations);
-      } catch (error) {
-        console.error('解析操作历史失败:', error);
-      }
-    }
-    
-    // 生成操作标题
-    const title = '文件树';
-    
-    // 从会话存储中获取恢复的操作ID（如果有）
-    const restoredOperationId = sessionStorage.getItem('restoredOperationId');
-    
-    // 检查是否已存在相同ID的记录
-    let existingIndex = -1;
-    let existingId = null;
-    
-    // 如果有恢复的操作ID，优先使用ID匹配
-    if (restoredOperationId) {
-      existingIndex = operations.findIndex((op: any) => op.id === restoredOperationId);
-      if (existingIndex >= 0) {
-        existingId = restoredOperationId;
-      }
-      // 使用后清除会话存储中的ID
-      sessionStorage.removeItem('restoredOperationId');
-    }
-    
-  // 生成目录结构文本
-  const treeText = fileTree ? formatDirectoryTree(fileTree) : '';
-  }
   // 根据上传的文件夹生成目录结构文本
   const treeText = fileTree? formatDirectoryTree(fileTree) : '';
   return (
@@ -247,7 +135,7 @@ function readEntry(
             <input 
               type="file" 
               id='fileInput'
-              // @ts-ignore
+              // @ts-expect-error webkitdirectory is a non-standard attribute
               webkitdirectory="true"
               className="hidden" 
               onChange={(e) => {
