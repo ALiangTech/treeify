@@ -1,103 +1,342 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { createFileTree } from '@/utils/file';
+import { FileTreeNode } from '@/utils/types';
+import TreeNode from '@/components/TreeNode';
+import { formatDirectoryTree } from '@/utils/treeFormat';
+export default function TreeifyPage() {
+  const [isDragging, setIsDragging] = useState(false);
+  const [fileTree, setFileTree] = useState<FileTreeNode[] | null>(null);
+  const [copySuccess, setCopySuccess] = useState(false);
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  const [treeStyle, setTreeStyle] = useState({
+    showLines: true,
+    indentSize: 16,
+    lineColor: 'rgb(229 231 235)',
+    iconColor: 'currentColor'
+  });
+// 递归读取目录内的所有文件
+function readEntry(
+  entry: any,
+  webkitRelativePath: string = '',
+  fileList: FileEntry[] = []
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (entry.isFile) {
+      entry.file((file: File) => {
+        fileList.push({
+          name: file.name,
+          type: 'file',
+          size: file.size,
+          lastModified: file.lastModified,
+          webkitRelativePath: webkitRelativePath + file.name,
+        });
+        resolve();
+      }, reject);
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      reader.readEntries(async (entries: any[]) => {
+        // 过滤 node_modules 文件夹
+        if (entry.name === 'node_modules') {
+          return resolve();
+        }
+        for (let i = 0; i < entries.length; i++) {
+          await readEntry(entries[i], webkitRelativePath + entry.name + '/', fileList);
+        }
+        resolve();
+      }, reject);
+    }
+  });
+}
+  // 从会话存储中恢复文件树状态
+  useEffect(() => {
+    const restoredFileTree = sessionStorage.getItem('restoredFileTree');
+    const restoredTreeStyle = sessionStorage.getItem('restoredTreeStyle');
+    const restoredOperationId = sessionStorage.getItem('restoredOperationId');
+    
+    if (restoredFileTree) {
+      try {
+        setFileTree(JSON.parse(restoredFileTree));
+        // 恢复后清除会话存储中的数据
+        sessionStorage.removeItem('restoredFileTree');
+      } catch (error) {
+        console.error('解析恢复的文件树失败:', error);
+      }
+    }
+    
+    if (restoredTreeStyle) {
+      try {
+        setTreeStyle(JSON.parse(restoredTreeStyle));
+        sessionStorage.removeItem('restoredTreeStyle');
+      } catch (error) {
+        console.error('解析恢复的树样式失败:', error);
+      }
+    }
+    
+    // 保留操作ID，用于后续保存操作历史时匹配
+    // 注意：不在这里清除restoredOperationId，而是在saveOperationToHistory中使用后清除
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const items = e.dataTransfer.items;
+    const files = [];
+  debugger
+    for (let i = 0; i < items.length; i++) {
+      const entry = items[i].webkitGetAsEntry?.();
+      if (entry) {
+        await readEntry(entry, '', files);
+      }
+    }
+    console.log('文件列表:', files);
+    const tree = createFileTree(files);
+    console.log('生成的文件树:', tree);                 
+    // 更新文件树状态
+    setFileTree(tree);
+  }, []);
+
+  const handleFileSelect = useCallback(() => {
+    console.log('文件选择器被点击');
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.webkitdirectory = true;
+    
+    // 添加错误处理
+    try {
+      input.addEventListener('change', (e: Event) => {
+        const files = (e.target as HTMLInputElement).files;
+        console.log('选择的文件数量:', files?.length || 0);
+        
+        if (files && files.length > 0) {
+          // 检查是否有webkitRelativePath属性
+          const hasRelativePath = Array.from(files).some(file => file.webkitRelativePath && file.webkitRelativePath.length > 0);
+          console.log('文件是否有相对路径:', hasRelativePath);
+          
+          const tree = createFileTree(files);
+          console.log('生成的文件树:', tree);
+          setFileTree(tree);
+          
+          // 保存操作到历史记录
+          saveOperationToHistory(tree);
+        } else {
+          console.log('没有选择文件');
+        }
+      });
+      
+      // 检查浏览器是否支持webkitdirectory
+      if ('webkitdirectory' in input) {
+        console.log('浏览器支持webkitdirectory');
+      } else {
+        console.log('浏览器不支持webkitdirectory');
+        alert('您的浏览器不支持文件夹选择，请使用Chrome、Edge或Firefox最新版本');
+      }
+      
+      input.click();
+    } catch (error) {
+      console.error('文件选择器错误:', error);
+      alert('文件选择器出错，请使用Chrome、Edge或Firefox最新版本');
+    }
+  }, []);
+
+  const handleCopyText = useCallback(() => {
+    if (textAreaRef.current && fileTree) {
+      textAreaRef.current.select();
+      document.execCommand('copy');
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    }
+  }, [fileTree]);
+
+  // 处理节点可见性变更
+  const handleNodeVisibilityChange = useCallback((node: FileTreeNode, visible: boolean) => {
+    // 强制更新目录文本
+    setFileTree(prevTree => {
+      if (!prevTree) return null;
+      const newTree = [...prevTree];
+      
+      // 保存操作到历史记录（节点可见性变更）
+      saveOperationToHistory(newTree);
+      
+      return newTree;
+    });
+  }, []);
+  
+  // 保存操作到历史记录
+  const saveOperationToHistory = (tree: FileTreeNode[]) => {
+    // 从本地存储获取现有的操作历史
+    const storedOperations = localStorage.getItem('operationHistory');
+    let operations = [];
+    
+    if (storedOperations) {
+      try {
+        operations = JSON.parse(storedOperations);
+      } catch (error) {
+        console.error('解析操作历史失败:', error);
+      }
+    }
+    
+    // 生成操作标题
+    const title = '文件树';
+    
+    // 从会话存储中获取恢复的操作ID（如果有）
+    const restoredOperationId = sessionStorage.getItem('restoredOperationId');
+    
+    // 检查是否已存在相同ID的记录
+    let existingIndex = -1;
+    let existingId = null;
+    
+    // 如果有恢复的操作ID，优先使用ID匹配
+    if (restoredOperationId) {
+      existingIndex = operations.findIndex((op: any) => op.id === restoredOperationId);
+      if (existingIndex >= 0) {
+        existingId = restoredOperationId;
+      }
+      // 使用后清除会话存储中的ID
+      sessionStorage.removeItem('restoredOperationId');
+    }
+    
+  // 生成目录结构文本
+  const treeText = fileTree ? formatDirectoryTree(fileTree) : '';
+  }
+  // 根据上传的文件夹生成目录结构文本
+  const treeText = fileTree? formatDirectoryTree(fileTree) : '';
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
+    <div className="h-full flex flex-col">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-semibold">Treeify</h1>
+        <div className="flex space-x-2">
+          {/* 请将下面的链接替换为您的实际GitHub仓库地址 */}
           <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
+            href="https://github.com/ALiangTech/treeify"
             target="_blank"
             rel="noopener noreferrer"
+            className="px-3 py-1 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 rounded-md text-sm transition-colors duration-200 flex items-center"
+            title="查看GitHub源码"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
+            <svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.167 6.839 9.49.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.268 2.75 1.026A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.026 2.747-1.026.546 1.377.202 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
+            </svg>
+            GitHub
           </a>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      </div>
+      {/* 上传区域 */}
+      <label
+            className={`bg-white dark:bg-black/[.24] rounded-lg p-6 shadow-sm border-2 ${isDragging ? 'border-blue-500 border-dashed' : 'border-black/[.08] dark:border-white/[.08]'} transition-colors duration-200 cursor-pointer min-h-[200px] flex flex-col items-center justify-center mb-6`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            htmlFor='fileInput'
+          >
+            <input 
+              type="file" 
+              id='fileInput'
+              // @ts-ignore
+              webkitdirectory="true"
+              className="hidden" 
+              onChange={(e) => {
+                const files = e.target.files;
+                console.log('选择的文件数量:', files);
+                
+                if (files && files.length > 0) {
+                  // 检查是否有webkitRelativePath属性
+                  const hasRelativePath = Array.from(files).some(file => file.webkitRelativePath && file.webkitRelativePath.length > 0);
+                  console.log('文件是否有相对路径:', hasRelativePath);              
+                  const tree = createFileTree(files);
+                  console.log('生成的文件树:', tree);                 
+                  // 更新文件树状态
+                  setFileTree(tree);
+                } else {
+                  console.log('没有选择文件');
+                }
+              }}
+            />
+            <div className="text-center">
+              <svg className="w-12 h-12 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+              </svg>
+              <p className="text-lg mb-2 font-medium text-gray-900 dark:text-gray-100">
+                {isDragging ? '释放以上传文件夹' : '点击或拖拽文件夹到这里'}
+              </p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                支持文件夹拖拽上传
+              </p>
+            </div>
+      </label>
+      {/* 主内容区域 - 单列布局 */}
+      <div className="flex flex-1 w-full gap-6 overflow-hidden">
+  
+          {/* 文件树 */}
+          {fileTree && fileTree.length > 0 && (
+            <div className="bg-white h-full overflow-hidden dark:bg-black/[.24] rounded-lg p-6 shadow-sm border border-black/[.08] dark:border-white/[.08] flex-1 overflow-auto">
+              <h2 className="text-lg font-medium mb-4">文件结构</h2>
+              <div className="overflow-x-auto">
+                {fileTree.map((node, index) => (
+                  <TreeNode 
+                    key={`${node.name}-${index}`} 
+                    node={node} 
+                    style={treeStyle}
+                    onVisibilityChange={handleNodeVisibilityChange}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        
+        {/* 目录结构文本 */}
+        {fileTree && fileTree.length > 0 && (
+          <div className="w-1/2 bg-white dark:bg-black/[.24] rounded-lg p-6 shadow-sm border border-black/[.08] dark:border-white/[.08] flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-medium">目录结构</h2>
+              <button
+                onClick={handleCopyText}
+                className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded-md text-sm transition-colors duration-200 flex items-center"
+              >
+                {copySuccess ? (
+                  <>
+                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path>
+                    </svg>
+                    已复制
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path>
+                    </svg>
+                    复制
+                  </>
+                )}
+              </button>
+            </div>
+            <div className="flex-1 relative">
+              <textarea
+                ref={textAreaRef}
+                readOnly
+                value={treeText}
+                className="w-full h-full p-4 font-mono text-sm bg-gray-50 dark:bg-gray-800/50 rounded-md border border-gray-200 dark:border-gray-700 resize-none focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
-}
+};
+
